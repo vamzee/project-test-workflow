@@ -1,0 +1,6 @@
+langgraph>=0.2.28
+langchain>=0.1.0
+langchain-core>=0.2.39
+kafka-python==2.0.2
+requests==2.31.0
+pydantic==2.5.3
