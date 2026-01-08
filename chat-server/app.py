@@ -1,70 +1,24 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 import logging
 import asyncio
 from typing import Dict
+import httpx
 from session_manager import SessionManager
-from kafka_handler import KafkaHandler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Chat Server")
 
-# Initialize managers
+# Initialize session manager
 session_manager = SessionManager()
-kafka_handler = KafkaHandler()
 
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
 
-# Store reference to main event loop
-main_event_loop = None
-
-
-@app.on_event("startup")
-async def startup_event():
-    global main_event_loop
-    main_event_loop = asyncio.get_running_loop()
-    logger.info("Starting chat server...")
-    kafka_handler.connect()
-    kafka_handler.start_consumer(handle_kafka_response)
-    logger.info("Chat server started successfully")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    kafka_handler.stop()
-    logger.info("Chat server shutdown")
-
-
-def handle_kafka_response(session_id: str, response: str):
-    """Callback for Kafka consumer to handle responses"""
-    session_manager.add_message(session_id, "assistant", response)
-
-    # Send to WebSocket if connected
-    if session_id in active_connections:
-        websocket = active_connections[session_id]
-        try:
-            if main_event_loop:
-                asyncio.run_coroutine_threadsafe(
-                    send_message_to_websocket(websocket, response), main_event_loop
-                )
-            else:
-                logger.error("Main event loop not available")
-        except Exception as e:
-            logger.error(f"Error scheduling WebSocket message: {e}")
-
-
-async def send_message_to_websocket(websocket: WebSocket, message: str):
-    try:
-        await websocket.send_json({
-            "type": "assistant",
-            "message": message
-        })
-    except Exception as e:
-        logger.error(f"Failed to send message via WebSocket: {e}")
+# Configuration
+ORCHESTRATOR_URL = "http://localhost:8002"
 
 
 @app.get("/")
@@ -116,14 +70,51 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 # Add user message to session
                 session_manager.add_message(session_id, "user", message)
 
-                # Send to Kafka
-                kafka_handler.send_request(session_id, message)
-
                 # Acknowledge receipt
                 await websocket.send_json({
                     "type": "ack",
                     "message": "Message received"
                 })
+
+                # Send to orchestrator and get response
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.post(
+                            f"{ORCHESTRATOR_URL}/process",
+                            json={
+                                "session_id": session_id,
+                                "message": message
+                            }
+                        )
+
+                        if response.status_code == 200:
+                            response_data = response.json()
+                            ai_response = response_data.get("response", "")
+
+                            # Add assistant message to session
+                            session_manager.add_message(session_id, "assistant", ai_response)
+
+                            # Send to WebSocket
+                            await websocket.send_json({
+                                "type": "assistant",
+                                "message": ai_response
+                            })
+                            logger.info(f"Sent AI response for session {session_id}")
+                        else:
+                            error_msg = "Sorry, I encountered an error processing your request."
+                            await websocket.send_json({
+                                "type": "assistant",
+                                "message": error_msg
+                            })
+                            logger.error(f"Orchestrator error: {response.status_code}")
+
+                except Exception as e:
+                    logger.error(f"Error calling orchestrator: {e}")
+                    error_msg = "Sorry, I encountered an error processing your request."
+                    await websocket.send_json({
+                        "type": "assistant",
+                        "message": error_msg
+                    })
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")

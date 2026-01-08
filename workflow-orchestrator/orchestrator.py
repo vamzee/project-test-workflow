@@ -1,6 +1,6 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import logging
-import time
-from kafka_handler import KafkaHandler
 from supervisor_agent import SupervisorAgent
 
 logging.basicConfig(
@@ -9,55 +9,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+app = FastAPI(title="Workflow Orchestrator")
 
-class WorkflowOrchestrator:
-    def __init__(self):
-        self.kafka_handler = KafkaHandler()
-        self.supervisor = SupervisorAgent()
+# Initialize supervisor agent
+supervisor = SupervisorAgent()
 
-    def start(self):
-        logger.info("Starting Workflow Orchestrator...")
 
-        # Connect Kafka components
-        self.kafka_handler.connect_producer()
-        self.kafka_handler.connect_consumer(
-            topic='chat-requests',
-            group_id='orchestrator-group'
+class ProcessRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class ProcessResponse(BaseModel):
+    session_id: str
+    response: str
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "workflow-orchestrator"}
+
+
+@app.post("/process", response_model=ProcessResponse)
+async def process_message(request: ProcessRequest):
+    """Process a chat message through the supervisor agent"""
+    logger.info(f"Processing request for session {request.session_id}")
+
+    try:
+        # Use supervisor agent to process the request
+        response = supervisor.process_request(request.session_id, request.message)
+
+        logger.info(f"Successfully processed request for session {request.session_id}")
+
+        return ProcessResponse(
+            session_id=request.session_id,
+            response=response
         )
 
-        logger.info("Workflow Orchestrator started successfully")
-        logger.info("Waiting for requests...")
-
-        try:
-            # Start consuming requests
-            self.kafka_handler.consume_requests(self.handle_request)
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-        finally:
-            self.kafka_handler.close()
-
-    def handle_request(self, session_id: str, user_message: str):
-        logger.info(f"Processing request for session {session_id}")
-
-        try:
-            # Use supervisor agent to process the request
-            response = self.supervisor.process_request(session_id, user_message)
-
-            # Send response back to Kafka
-            self.kafka_handler.send_response(session_id, response)
-            logger.info(f"Successfully processed request for session {session_id}")
-
-        except Exception as e:
-            logger.error(f"Error processing request for session {session_id}: {e}")
-            error_response = f"Sorry, I encountered an error processing your request."
-            self.kafka_handler.send_response(session_id, error_response)
+    except Exception as e:
+        logger.error(f"Error processing request for session {request.session_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing request: {str(e)}"
+        )
 
 
 if __name__ == "__main__":
-    orchestrator = WorkflowOrchestrator()
-
-    # Wait a bit for Kafka to be ready
-    logger.info("Waiting 5 seconds for Kafka to be ready...")
-    time.sleep(5)
-
-    orchestrator.start()
+    import uvicorn
+    logger.info("Starting Workflow Orchestrator API...")
+    uvicorn.run(app, host="0.0.0.0", port=8002)
