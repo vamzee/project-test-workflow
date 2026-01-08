@@ -1,7 +1,8 @@
 import logging
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, AsyncGenerator
 from langgraph.graph import StateGraph, END
 import requests
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -99,3 +100,41 @@ class SupervisorAgent:
         final_state = self.graph.invoke(initial_state)
 
         return final_state["response"]
+
+    async def process_request_stream(self, session_id: str, user_message: str) -> AsyncGenerator[str, None]:
+        """Process request with streaming response"""
+        logger.info(f"Starting supervisor streaming for session {session_id}")
+
+        try:
+            response = requests.post(
+                f"{self.conversational_service_url}/chat/stream",
+                json={
+                    "session_id": session_id,
+                    "message": user_message
+                },
+                stream=True,
+                timeout=60
+            )
+
+            if response.status_code == 200:
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line.decode('utf-8'))
+                            if "chunk" in data:
+                                yield data["chunk"]
+                            elif "error" in data:
+                                logger.error(f"Error from conversational workflow: {data['error']}")
+                                yield f"Error: {data['error']}"
+                                break
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to decode JSON: {e}")
+                            continue
+            else:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Error from conversational workflow: {error_msg}")
+                yield f"Sorry, I encountered an error: {error_msg}"
+
+        except Exception as e:
+            logger.error(f"Failed to call conversational workflow: {e}")
+            yield f"Sorry, I encountered an error: {str(e)}"

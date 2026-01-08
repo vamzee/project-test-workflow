@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import logging
 import os
+import json
 from dotenv import load_dotenv
 from workflow import ConversationalWorkflow
 
@@ -63,6 +65,23 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"Error processing chat request: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Stream chat responses in real-time"""
+    logger.info(f"Received streaming chat request for session {request.session_id}")
+
+    async def generate():
+        try:
+            async for chunk in workflow.process_message_stream(request.session_id, request.message):
+                # Send each chunk as JSON
+                yield json.dumps({"chunk": chunk}) + "\n"
+        except Exception as e:
+            logger.error(f"Error in streaming: {e}")
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @app.delete("/sessions/{session_id}")

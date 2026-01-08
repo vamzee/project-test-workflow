@@ -118,6 +118,55 @@ class ConversationalWorkflow:
 
         return final_state["response"]
 
+    async def process_message_stream(self, session_id: str, message: str):
+        """Process message with streaming response"""
+        logger.info(f"Processing streaming message for session {session_id}")
+
+        # Get or initialize chat history for this session
+        if session_id not in self.session_histories:
+            self.session_histories[session_id] = []
+
+        chat_history = self.session_histories[session_id]
+
+        # Build messages for LLM
+        messages = [
+            SystemMessage(content="You are a helpful AI assistant. Provide clear, concise, and friendly responses.")
+        ]
+
+        # Add chat history
+        for msg in chat_history:
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            else:
+                messages.append(AIMessage(content=msg["content"]))
+
+        # Add current message
+        messages.append(HumanMessage(content=message))
+
+        try:
+            # Stream from LLM
+            full_response = ""
+            async for chunk in self.llm.astream(messages):
+                if chunk.content:
+                    full_response += chunk.content
+                    yield chunk.content
+
+            # Update chat history after streaming completes
+            self.session_histories[session_id].append({
+                "role": "user",
+                "content": message
+            })
+            self.session_histories[session_id].append({
+                "role": "assistant",
+                "content": full_response
+            })
+
+            logger.info(f"Completed streaming response for session {session_id}")
+
+        except Exception as e:
+            logger.error(f"Error in streaming: {e}")
+            yield f"I apologize, but I'm having trouble processing your request right now."
+
     def clear_session(self, session_id: str):
         if session_id in self.session_histories:
             del self.session_histories[session_id]

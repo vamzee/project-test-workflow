@@ -383,6 +383,19 @@
             30% { transform: translateY(-8px); }
         }
 
+        /* Streaming Cursor */
+        .cursor {
+            display: inline-block;
+            margin-left: 2px;
+            animation: blink 1s step-end infinite;
+            color: var(--primary);
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
         /* Responsive Design */
         @media (max-width: 768px) {
             .sidebar {
@@ -448,6 +461,7 @@
     <script>
         let currentSessionId = null;
         let websocket = null;
+        let currentStreamingMessage = null;
 
         // Auto-resize textarea
         const messageInput = document.getElementById('messageInput');
@@ -541,8 +555,16 @@
                 const data = JSON.parse(event.data);
 
                 if (data.type === 'assistant') {
+                    // Non-streaming response (fallback)
                     removeTypingIndicator();
                     addMessage('assistant', data.message);
+                } else if (data.type === 'assistant_chunk') {
+                    // Streaming chunk received
+                    removeTypingIndicator();
+                    appendStreamingChunk(data.chunk);
+                } else if (data.type === 'assistant_done') {
+                    // Streaming completed
+                    finalizeStreamingMessage();
                 }
             };
 
@@ -623,6 +645,47 @@
             const typingDiv = document.getElementById('typingIndicator');
             if (typingDiv) {
                 typingDiv.remove();
+            }
+        }
+
+        function appendStreamingChunk(chunk) {
+            const messagesDiv = document.getElementById('messages');
+
+            // Remove welcome message if present
+            if (messagesDiv.querySelector('.welcome')) {
+                messagesDiv.innerHTML = '';
+            }
+
+            // Create new streaming message if it doesn't exist
+            if (!currentStreamingMessage) {
+                currentStreamingMessage = document.createElement('div');
+                currentStreamingMessage.className = 'message assistant';
+                currentStreamingMessage.id = 'streamingMessage';
+                currentStreamingMessage.innerHTML = `
+                    <div class="message-avatar">AI</div>
+                    <div class="message-content"><span class="streaming-text"></span><span class="cursor">▊</span></div>
+                `;
+                messagesDiv.appendChild(currentStreamingMessage);
+            }
+
+            // Append chunk to the streaming text
+            const streamingText = currentStreamingMessage.querySelector('.streaming-text');
+            streamingText.textContent += chunk;
+
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function finalizeStreamingMessage() {
+            if (currentStreamingMessage) {
+                // Remove cursor
+                const cursor = currentStreamingMessage.querySelector('.cursor');
+                if (cursor) {
+                    cursor.remove();
+                }
+
+                // Clear reference
+                currentStreamingMessage = null;
             }
         }
 

@@ -18,6 +18,9 @@ kafka_handler = KafkaHandler()
 # Store active WebSocket connections
 active_connections: Dict[str, WebSocket] = {}
 
+# Store streaming message buffers (accumulate chunks)
+streaming_buffers: Dict[str, str] = {}
+
 # Store reference to main event loop
 main_event_loop = None
 
@@ -38,9 +41,24 @@ async def shutdown_event():
     logger.info("Chat server shutdown")
 
 
-def handle_kafka_response(session_id: str, response: str):
-    """Callback for Kafka consumer to handle responses"""
-    session_manager.add_message(session_id, "assistant", response)
+def handle_kafka_response(session_id: str, response: str, is_chunk: bool = False, is_done: bool = False):
+    """Callback for Kafka consumer to handle responses (including streaming chunks)"""
+
+    # Initialize buffer for this session if needed
+    if session_id not in streaming_buffers:
+        streaming_buffers[session_id] = ""
+
+    # Accumulate chunks
+    if is_chunk and response:
+        streaming_buffers[session_id] += response
+
+    # When streaming is done, save complete message
+    if is_done:
+        complete_message = streaming_buffers[session_id]
+        if complete_message:
+            session_manager.add_message(session_id, "assistant", complete_message)
+        # Clear buffer
+        streaming_buffers[session_id] = ""
 
     # Send to WebSocket if connected
     if session_id in active_connections:
@@ -48,7 +66,8 @@ def handle_kafka_response(session_id: str, response: str):
         try:
             if main_event_loop:
                 asyncio.run_coroutine_threadsafe(
-                    send_message_to_websocket(websocket, response), main_event_loop
+                    send_streaming_to_websocket(websocket, response, is_chunk, is_done),
+                    main_event_loop
                 )
             else:
                 logger.error("Main event loop not available")
@@ -64,6 +83,23 @@ async def send_message_to_websocket(websocket: WebSocket, message: str):
         })
     except Exception as e:
         logger.error(f"Failed to send message via WebSocket: {e}")
+
+
+async def send_streaming_to_websocket(websocket: WebSocket, chunk: str, is_chunk: bool, is_done: bool):
+    try:
+        if is_chunk and chunk:
+            # Send chunk
+            await websocket.send_json({
+                "type": "assistant_chunk",
+                "chunk": chunk
+            })
+        elif is_done:
+            # Send done signal
+            await websocket.send_json({
+                "type": "assistant_done"
+            })
+    except Exception as e:
+        logger.error(f"Failed to send streaming message via WebSocket: {e}")
 
 
 @app.get("/")

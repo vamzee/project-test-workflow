@@ -73,10 +73,18 @@ class KafkaHandler:
                 try:
                     data = message.value
                     session_id = data.get('session_id')
-                    response = data.get('response')
+                    response = data.get('response', '')
+                    is_chunk = data.get('is_chunk', False)
+                    is_done = data.get('is_done', False)
 
-                    logger.info(f"Received response for session {session_id}")
-                    callback(session_id, response)
+                    if is_chunk:
+                        logger.debug(f"Received chunk for session {session_id}")
+                    elif is_done:
+                        logger.info(f"Received done signal for session {session_id}")
+                    else:
+                        logger.info(f"Received response for session {session_id}")
+
+                    callback(session_id, response, is_chunk, is_done)
                 except Exception as e:
                     logger.error(f"Error processing Kafka message: {e}")
         except Exception as e:

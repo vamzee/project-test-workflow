@@ -30,6 +30,8 @@ class ChatResponse(faust.Record):
     session_id: str
     response: str
     timestamp: float = None
+    is_chunk: bool = False
+    is_done: bool = False
 
 
 # Define Kafka topics
@@ -40,35 +42,45 @@ chat_responses_topic = app.topic('chat-responses', value_type=ChatResponse)
 @app.agent(chat_requests_topic)
 async def process_chat_request(requests):
     """
-    Faust agent that processes incoming chat requests
+    Faust agent that processes incoming chat requests with streaming
     """
     async for request in requests:
         try:
-            logger.info(f"Processing request for session {request.session_id}")
+            logger.info(f"Processing streaming request for session {request.session_id}")
 
-            # Use supervisor agent to process the request
-            response_text = supervisor.process_request(
+            # Use supervisor agent to process the request with streaming
+            async for chunk in supervisor.process_request_stream(
                 request.session_id,
                 request.message
-            )
+            ):
+                # Send each chunk to Kafka
+                chunk_response = ChatResponse(
+                    session_id=request.session_id,
+                    response=chunk,
+                    is_chunk=True,
+                    is_done=False
+                )
+                await chat_responses_topic.send(value=chunk_response)
 
-            # Create response message
-            response = ChatResponse(
+            # Send final "done" message
+            done_response = ChatResponse(
                 session_id=request.session_id,
-                response=response_text
+                response="",
+                is_chunk=False,
+                is_done=True
             )
+            await chat_responses_topic.send(value=done_response)
 
-            # Send response to output topic
-            await chat_responses_topic.send(value=response)
-
-            logger.info(f"Successfully processed request for session {request.session_id}")
+            logger.info(f"Successfully processed streaming request for session {request.session_id}")
 
         except Exception as e:
             logger.error(f"Error processing request: {e}")
             # Send error response
             error_response = ChatResponse(
                 session_id=request.session_id,
-                response=f"Sorry, I encountered an error: {str(e)}"
+                response=f"Sorry, I encountered an error: {str(e)}",
+                is_chunk=False,
+                is_done=True
             )
             await chat_responses_topic.send(value=error_response)
 
