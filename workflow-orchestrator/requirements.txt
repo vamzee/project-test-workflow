@@ -1,7 +1,7 @@
 langgraph>=0.2.28
 langchain>=0.1.0
 langchain-core>=0.2.39
-fastapi==0.109.0
-uvicorn==0.27.0
+faust-streaming==0.11.3
 requests==2.31.0
 pydantic==2.5.3
+aiokafka==0.11.0
